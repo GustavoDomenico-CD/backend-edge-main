@@ -1,4 +1,13 @@
-import { IsString, IsOptional, IsBoolean, IsInt, IsObject } from 'class-validator'
+import { IsString, IsOptional, IsBoolean, IsInt, IsObject, IsArray, ValidateNested } from 'class-validator'
+import { Type } from 'class-transformer'
+
+export class ProactiveButtonDto {
+  @IsString()
+  label: string
+
+  @IsString()
+  value: string
+}
 
 export class CreateProactiveRuleDto {
   @IsInt()
@@ -12,6 +21,12 @@ export class CreateProactiveRuleDto {
 
   @IsString()
   message: string
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProactiveButtonDto)
+  buttons?: ProactiveButtonDto[]
 
   @IsOptional()
   @IsBoolean()
@@ -30,6 +45,12 @@ export class UpdateProactiveRuleDto {
   @IsOptional()
   @IsString()
   message?: string
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProactiveButtonDto)
+  buttons?: ProactiveButtonDto[]
 
   @IsOptional()
   @IsBoolean()

@@ -16,6 +16,7 @@ export class ProactiveAgentService {
         trigger: dto.trigger,
         condition: dto.condition as any,
         message: dto.message,
+        buttons: (dto.buttons ?? []) as any,
         isActive: dto.isActive ?? true,
       },
     })
@@ -35,6 +36,7 @@ export class ProactiveAgentService {
         ...(dto.trigger !== undefined && { trigger: dto.trigger }),
         ...(dto.condition !== undefined && { condition: dto.condition as any }),
         ...(dto.message !== undefined && { message: dto.message }),
+        ...(dto.buttons !== undefined && { buttons: dto.buttons as any }),
         ...(dto.isActive !== undefined && { isActive: dto.isActive }),
       },
     })
@@ -64,10 +66,16 @@ export class ProactiveAgentService {
     })
 
     const now = new Date()
-    const messages: { ruleId: number; message: string; trigger: string }[] = []
+    const messages: {
+      ruleId: number
+      message: string
+      trigger: string
+      buttons: { label: string; value: string }[]
+    }[] = []
 
     for (const rule of rules) {
       const condition = rule.condition as Record<string, unknown>
+      const buttons = (rule.buttons ?? []) as { label: string; value: string }[]
 
       if (rule.trigger === 'interval') {
         const intervalMinutes = (condition.intervalMinutes as number) || 30
@@ -81,6 +89,7 @@ export class ProactiveAgentService {
             ruleId: rule.id,
             message: rule.message,
             trigger: rule.trigger,
+            buttons,
           })
         }
       }
@@ -100,6 +109,7 @@ export class ProactiveAgentService {
               ruleId: rule.id,
               message: rule.message,
               trigger: rule.trigger,
+              buttons,
             })
           }
         }
@@ -130,15 +140,22 @@ export class ProactiveAgentService {
       where: { userId, isActive: true, trigger: 'event' },
     })
 
-    const messages: { ruleId: number; message: string; trigger: string }[] = []
+    const messages: {
+      ruleId: number
+      message: string
+      trigger: string
+      buttons: { label: string; value: string }[]
+    }[] = []
 
     for (const rule of rules) {
       const condition = rule.condition as Record<string, unknown>
+      const buttons = (rule.buttons ?? []) as { label: string; value: string }[]
       if (condition.event === eventName) {
         messages.push({
           ruleId: rule.id,
           message: rule.message,
           trigger: 'event',
+          buttons,
         })
       }
     }

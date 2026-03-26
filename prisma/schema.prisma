@@ -35,6 +35,8 @@ model ProactiveRule {
   condition   Json
   /// Mensagem ou template que o agente envia proativamente
   message     String
+  /// Botões de resposta rápida em JSON: [{ "label": "Sim", "value": "sim" }, ...]
+  buttons     Json     @default("[]")
   /// Se a regra está ativa
   isActive    Boolean  @default(true)
   /// Última vez que esta regra foi disparada
