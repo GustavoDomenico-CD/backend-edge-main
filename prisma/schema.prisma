@@ -42,3 +42,59 @@ model ProactiveRule {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
+
+// ─── WhatsApp Integration ─────────────────────────────────
+
+model WhatsAppConfig {
+  id           Int      @id @default(autoincrement())
+  instanceName String
+  phoneNumber  String
+  apiKey       String
+  webhookUrl   String   @default("")
+  status       String   @default("disconnected")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model WhatsAppContact {
+  id            Int                @id @default(autoincrement())
+  phoneNumber   String             @unique
+  name          String
+  profilePicUrl String?
+  isBlocked     Boolean            @default(false)
+  lastMessageAt DateTime?
+  tags          String             @default("[]")
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  messages      WhatsAppMessage[]
+}
+
+model WhatsAppMessage {
+  id           Int              @id @default(autoincrement())
+  contactId    Int
+  contact      WhatsAppContact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  direction    String
+  type         String
+  content      String
+  mediaUrl     String?
+  status       String           @default("pending")
+  externalId   String?
+  templateName String?
+  sentAt       DateTime
+  deliveredAt  DateTime?
+  readAt       DateTime?
+  createdAt    DateTime         @default(now())
+}
+
+model WhatsAppTemplate {
+  id        Int      @id @default(autoincrement())
+  name      String
+  category  String
+  language  String
+  content   String
+  variables String   @default("[]")
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

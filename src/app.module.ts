@@ -5,6 +5,7 @@ import { AppService } from './app.service';
 import { AuthModule } from './modules/auth/auth.module';
 import { UserModule } from './modules/user/user.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
 import { PrismaModule } from './prisma/prisma.module';
 
 @Module({
@@ -14,6 +15,7 @@ import { PrismaModule } from './prisma/prisma.module';
     AuthModule,
     UserModule,
     AdminModule,
+    WhatsAppModule,
   ],
   controllers: [AppController],
   providers: [AppService],
