@@ -5,21 +5,25 @@ import { AppModule } from './app.module';
 import { PrismaService } from './prisma/prisma.service';
 
 async function seedSuperAdmin(prisma: PrismaService) {
-  const username = 'edgemachine';
-  const existing = await prisma.user.findUnique({ where: { username } });
-  if (existing) return;
-  const password = await bcrypt.hash('072025', 10);
-  await prisma.user.create({
-    data: {
-      username,
-      email: 'edgemachine@edge.local',
-      password,
-      name: 'Edge Machine',
-      role: 'superadmin',
-      isActive: true,
-    },
-  });
-  console.log('Superadmin "edgemachine" created.');
+  try {
+    const username = 'edgemachine';
+    const existing = await prisma.user.findUnique({ where: { username } });
+    if (existing) return;
+    const password = await bcrypt.hash('072025', 10);
+    await prisma.user.create({
+      data: {
+        username,
+        email: 'edgemachine@edge.local',
+        password,
+        name: 'Edge Machine',
+        role: 'superadmin',
+        isActive: true,
+      },
+    });
+    console.log('Superadmin "edgemachine" created.');
+  } catch (err) {
+    console.warn('Could not seed superadmin (run "npx prisma migrate deploy" first):', (err as Error).message);
+  }
 }
 
 async function bootstrap() {
