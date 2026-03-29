@@ -4,7 +4,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { Prisma } from '@prisma/client';
+import { Prisma, User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../prisma/prisma.service';
 import { toPublicUser } from '../user/to-public-user';
@@ -49,9 +49,17 @@ export class AuthService {
   }
 
   async login(dto: LoginDto) {
-    const user = await this.prisma.user.findUnique({
-      where: { email: dto.email },
-    });
+    let user: User | null = null;
+    if (dto.username) {
+      user = await this.prisma.user.findUnique({
+        where: { username: dto.username },
+      });
+    }
+    if (!user && dto.email) {
+      user = await this.prisma.user.findUnique({
+        where: { email: dto.email },
+      });
+    }
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
     }

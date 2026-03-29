@@ -31,7 +31,7 @@ export class CreateUserDto {
   phone?: string;
 
   @IsOptional()
-  @IsIn(['user', 'admin'])
+  @IsIn(['user', 'admin', 'superadmin'])
   role?: string;
 
   @IsOptional()

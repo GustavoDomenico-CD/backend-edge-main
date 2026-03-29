@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 export class UserResponseDto {
   id!: number;
   email!: string;
+  username!: string | null;
   name!: string | null;
   avatarUrl!: string | null;
   phone!: string | null;
