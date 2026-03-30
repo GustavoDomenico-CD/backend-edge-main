@@ -1,5 +1,18 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import * as path from 'path';
+import { mkdir, rm } from 'fs/promises';
+import makeWASocket, {
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  isJidBroadcast,
+  makeCacheableSignalKeyStore,
+  useMultiFileAuthState,
+  type WASocket,
+  type WAMessage,
+} from '@whiskeysockets/baileys';
+import pino from 'pino';
+import QRCode from 'qrcode';
 import {
   CreateWhatsAppConfigDto,
   UpdateWhatsAppConfigDto,
@@ -14,6 +27,254 @@ import {
 @Injectable()
 export class WhatsAppService {
   constructor(private readonly prisma: PrismaService) {}
+
+  private sock: WASocket | null = null;
+  private qrDataUrl: string | null = null;
+  private connecting = false;
+  private activeInstanceName: string | null = null;
+
+  private sessionsBaseDir() {
+    // Persisted on disk: survives restarts.
+    return path.resolve(process.cwd(), '.wa_sessions');
+  }
+
+  private sessionDir(instanceName: string) {
+    return path.join(this.sessionsBaseDir(), instanceName.replace(/[^\w.-]/g, '_'));
+  }
+
+  private async ensureSessionDir(instanceName: string) {
+    await mkdir(this.sessionDir(instanceName), { recursive: true });
+  }
+
+  private normalizeToJid(to: string) {
+    const trimmed = (to || '').trim();
+    if (!trimmed) return '';
+    if (trimmed.includes('@s.whatsapp.net') || trimmed.includes('@g.us')) return trimmed;
+    const digits = trimmed.replace(/[^\d]/g, '');
+    return `${digits}@s.whatsapp.net`;
+  }
+
+  private async updateActiveConfigStatus(status: string, phoneNumber?: string | null) {
+    const cfg = await this.getConfig();
+    if (!cfg) return;
+    await this.prisma.whatsAppConfig.update({
+      where: { id: cfg.id },
+      data: {
+        status,
+        phoneNumber: phoneNumber ?? cfg.phoneNumber,
+      },
+    });
+  }
+
+  async connectActive(forceNewSocket = false) {
+    const cfg = await this.getConfig();
+    if (!cfg) throw new NotFoundException('Nenhuma configuração ativa encontrada');
+
+    if (!forceNewSocket && this.sock && this.activeInstanceName === cfg.instanceName) {
+      return {
+        connected: cfg.status === 'connected',
+        status: cfg.status,
+        phoneNumber: cfg.phoneNumber ?? null,
+        instanceName: cfg.instanceName ?? null,
+        qr: this.qrDataUrl,
+      };
+    }
+
+    if (this.connecting) {
+      return {
+        connected: cfg.status === 'connected',
+        status: cfg.status,
+        phoneNumber: cfg.phoneNumber ?? null,
+        instanceName: cfg.instanceName ?? null,
+        qr: this.qrDataUrl,
+      };
+    }
+
+    this.connecting = true;
+    this.activeInstanceName = cfg.instanceName;
+    this.qrDataUrl = null;
+
+    await this.ensureSessionDir(cfg.instanceName);
+
+    const { state, saveCreds } = await useMultiFileAuthState(this.sessionDir(cfg.instanceName));
+    const { version } = await fetchLatestBaileysVersion();
+
+    const logger = pino({ level: 'silent' });
+
+    const sock = makeWASocket({
+      version,
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, logger),
+      },
+      logger,
+      printQRInTerminal: false,
+      markOnlineOnConnect: false,
+      generateHighQualityLinkPreview: true,
+      syncFullHistory: false,
+    });
+
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect, qr } = update;
+      if (qr) {
+        // DataURL is easiest for frontend.
+        this.qrDataUrl = await QRCode.toDataURL(qr, { margin: 1, width: 280 });
+        await this.updateActiveConfigStatus('qr');
+      }
+
+      if (connection === 'open') {
+        const me = sock.user?.id ?? null;
+        const phone = me ? String(me).split(':')[0].replace(/[^\d]/g, '') : null;
+        this.qrDataUrl = null;
+        await this.updateActiveConfigStatus('connected', phone);
+      }
+
+      if (connection === 'close') {
+        this.qrDataUrl = null;
+        const code = (lastDisconnect?.error as any)?.output?.statusCode as number | undefined;
+        const reason = code ? (DisconnectReason as any)[code] : undefined;
+        await this.updateActiveConfigStatus('disconnected');
+
+        // If logged out, we should require a new QR.
+        if (code === DisconnectReason.loggedOut) {
+          // keep session files; user can call reset-session explicitly
+        } else {
+          // Attempt reconnect on transient failures.
+          if (this.activeInstanceName === cfg.instanceName) {
+            // best-effort reconnect (do not loop hard)
+            setTimeout(() => {
+              this.connectActive(true).catch(() => {});
+            }, 1500);
+          }
+        }
+
+        // cleanup socket reference if this is current
+        if (this.sock === sock) {
+          this.sock = null;
+        }
+      }
+    });
+
+    sock.ev.on('messages.upsert', async (m) => {
+      try {
+        if (m.type !== 'notify') return;
+        for (const msg of m.messages) {
+          await this.persistInboundIfNeeded(msg);
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    this.sock = sock;
+    await this.updateActiveConfigStatus('connecting');
+    this.connecting = false;
+
+    // Give Baileys a short window to emit QR/open state, so frontend
+    // can usually render the QR right after clicking "Conectar".
+    const startedAt = Date.now();
+    const waitMs = 8000;
+    while (Date.now() - startedAt < waitMs) {
+      const fresh = await this.getConfig();
+      if (this.qrDataUrl || fresh?.status === 'connected' || fresh?.status === 'qr') break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+
+    const fresh = await this.getConfig();
+
+    return {
+      connected: fresh?.status === 'connected',
+      status: fresh?.status ?? 'connecting',
+      phoneNumber: fresh?.phoneNumber ?? cfg.phoneNumber ?? null,
+      instanceName: fresh?.instanceName ?? cfg.instanceName ?? null,
+      qr: this.qrDataUrl,
+    };
+  }
+
+  async disconnectActive(logout = false) {
+    this.qrDataUrl = null;
+    const sock = this.sock;
+    this.sock = null;
+    this.connecting = false;
+    if (sock) {
+      try {
+        if (logout) await sock.logout();
+      } catch {
+        // ignore
+      }
+      try {
+        sock.end(undefined);
+      } catch {
+        // ignore
+      }
+    }
+    await this.updateActiveConfigStatus('disconnected');
+    return { success: true };
+  }
+
+  async resetActiveSession() {
+    const cfg = await this.getConfig();
+    if (!cfg) throw new NotFoundException('Nenhuma configuração ativa encontrada');
+    await this.disconnectActive(true);
+    await rm(this.sessionDir(cfg.instanceName), { recursive: true, force: true });
+    await this.updateActiveConfigStatus('disconnected');
+    return { success: true };
+  }
+
+  private async ensureConnectedSocket() {
+    const cfg = await this.getConfig();
+    if (!cfg) throw new NotFoundException('Nenhuma configuração ativa encontrada');
+    if (!this.sock) {
+      await this.connectActive(true);
+    }
+    if (!this.sock) throw new ServiceUnavailableException('WhatsApp não está conectado');
+    if (cfg.status !== 'connected') {
+      throw new ServiceUnavailableException('WhatsApp não está conectado (aguarde QR/pareamento)');
+    }
+    return this.sock;
+  }
+
+  private async persistInboundIfNeeded(msg: WAMessage) {
+    const remoteJid = msg.key?.remoteJid;
+    if (!remoteJid) return;
+    if (msg.key?.fromMe) return;
+    if (isJidBroadcast(remoteJid)) return;
+
+    const from = remoteJid.replace('@s.whatsapp.net', '');
+    const messageId = msg.key?.id ?? `baileys_${Date.now()}`;
+
+    let type = 'text';
+    let content = '';
+    let mediaUrl: string | undefined;
+
+    const m = msg.message as any;
+    if (!m) return;
+
+    if (m.conversation) {
+      content = String(m.conversation);
+    } else if (m.extendedTextMessage?.text) {
+      content = String(m.extendedTextMessage.text);
+    } else if (m.imageMessage) {
+      type = 'image';
+      content = String(m.imageMessage.caption ?? '');
+    } else if (m.videoMessage) {
+      type = 'video';
+      content = String(m.videoMessage.caption ?? '');
+    } else if (m.documentMessage) {
+      type = 'document';
+      content = String(m.documentMessage.caption ?? '');
+    } else if (m.audioMessage) {
+      type = 'audio';
+      content = '';
+    } else {
+      type = 'unknown';
+      content = '';
+    }
+
+    await this.handleInboundMessage(from, messageId, type, content, mediaUrl);
+  }
 
   // ─── Config ─────────────────────────────────────────────
 
@@ -57,12 +318,17 @@ export class WhatsAppService {
       status: config?.status ?? 'disconnected',
       phoneNumber: config?.phoneNumber ?? null,
       instanceName: config?.instanceName ?? null,
+      qr: this.qrDataUrl,
     };
   }
 
   // ─── Messages ───────────────────────────────────────────
 
   async sendTextMessage(dto: SendTextMessageDto) {
+    const sock = await this.ensureConnectedSocket();
+    const toJid = this.normalizeToJid(dto.to);
+    if (!toJid) throw new NotFoundException('Destino inválido');
+
     const contact = await this.findOrCreateContact(dto.to);
     const message = await this.prisma.whatsAppMessage.create({
       data: {
@@ -75,19 +341,29 @@ export class WhatsAppService {
       },
     });
 
-    // Simulate sending (in production, this calls the WhatsApp Cloud API)
-    await this.prisma.whatsAppMessage.update({
-      where: { id: message.id },
-      data: {
-        status: 'sent',
-        externalId: `wamid.${Date.now()}${Math.random().toString(36).slice(2, 8)}`,
-      },
-    });
+    try {
+      const res = await sock.sendMessage(toJid, { text: dto.text });
+      await this.prisma.whatsAppMessage.update({
+        where: { id: message.id },
+        data: { status: 'sent', externalId: res?.key?.id ?? null },
+      });
+    } catch (err: unknown) {
+      await this.prisma.whatsAppMessage.update({
+        where: { id: message.id },
+        data: { status: 'failed' },
+      });
+      const msg = err instanceof Error ? err.message : 'Falha ao enviar mensagem';
+      throw new ServiceUnavailableException(msg);
+    }
 
     return { success: true, messageId: message.id };
   }
 
   async sendTemplateMessage(dto: SendTemplateMessageDto) {
+    const sock = await this.ensureConnectedSocket();
+    const toJid = this.normalizeToJid(dto.to);
+    if (!toJid) throw new NotFoundException('Destino inválido');
+
     const contact = await this.findOrCreateContact(dto.to);
     const content = dto.variables?.length
       ? `[Template: ${dto.templateName}] vars: ${dto.variables.join(', ')}`
@@ -99,17 +375,35 @@ export class WhatsAppService {
         direction: 'outbound',
         type: 'template',
         content,
-        status: 'sent',
+        status: 'pending',
         templateName: dto.templateName,
         sentAt: new Date(),
-        externalId: `wamid.${Date.now()}${Math.random().toString(36).slice(2, 8)}`,
       },
     });
+
+    try {
+      const res = await sock.sendMessage(toJid, { text: content });
+      await this.prisma.whatsAppMessage.update({
+        where: { id: message.id },
+        data: { status: 'sent', externalId: res?.key?.id ?? null },
+      });
+    } catch (err: unknown) {
+      await this.prisma.whatsAppMessage.update({
+        where: { id: message.id },
+        data: { status: 'failed' },
+      });
+      const msg = err instanceof Error ? err.message : 'Falha ao enviar template';
+      throw new ServiceUnavailableException(msg);
+    }
 
     return { success: true, messageId: message.id };
   }
 
   async sendMediaMessage(dto: SendMediaMessageDto) {
+    const sock = await this.ensureConnectedSocket();
+    const toJid = this.normalizeToJid(dto.to);
+    if (!toJid) throw new NotFoundException('Destino inválido');
+
     const contact = await this.findOrCreateContact(dto.to);
     const message = await this.prisma.whatsAppMessage.create({
       data: {
@@ -118,11 +412,33 @@ export class WhatsAppService {
         type: dto.type,
         content: dto.caption ?? '',
         mediaUrl: dto.mediaUrl,
-        status: 'sent',
+        status: 'pending',
         sentAt: new Date(),
-        externalId: `wamid.${Date.now()}${Math.random().toString(36).slice(2, 8)}`,
       },
     });
+
+    try {
+      // Baileys expects a direct URL or buffer. We'll treat mediaUrl as a URL.
+      const anyMsg: any = {};
+      if (dto.type === 'image') anyMsg.image = { url: dto.mediaUrl };
+      if (dto.type === 'video') anyMsg.video = { url: dto.mediaUrl };
+      if (dto.type === 'audio') anyMsg.audio = { url: dto.mediaUrl };
+      if (dto.type === 'document') anyMsg.document = { url: dto.mediaUrl, fileName: dto.filename ?? 'arquivo' };
+      if (dto.caption) anyMsg.caption = dto.caption;
+
+      const res = await sock.sendMessage(toJid, anyMsg);
+      await this.prisma.whatsAppMessage.update({
+        where: { id: message.id },
+        data: { status: 'sent', externalId: res?.key?.id ?? null },
+      });
+    } catch (err: unknown) {
+      await this.prisma.whatsAppMessage.update({
+        where: { id: message.id },
+        data: { status: 'failed' },
+      });
+      const msg = err instanceof Error ? err.message : 'Falha ao enviar mídia';
+      throw new ServiceUnavailableException(msg);
+    }
 
     return { success: true, messageId: message.id };
   }

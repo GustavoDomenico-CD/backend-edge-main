@@ -9,12 +9,21 @@ type JwtPayload = { sub: number };
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
+  private static fromAccessTokenCookie(req: { headers?: { cookie?: string } } | undefined): string | null {
+    const raw = req?.headers?.cookie ?? '';
+    const match = raw.match(/(?:^|;\s*)access_token=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
   constructor(
     config: ConfigService,
     private readonly prisma: PrismaService,
   ) {
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+        JwtStrategy.fromAccessTokenCookie,
+      ]),
       secretOrKey: config.getOrThrow<string>('JWT_SECRET'),
     });
   }

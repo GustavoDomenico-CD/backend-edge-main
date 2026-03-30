@@ -3,7 +3,6 @@ import {
   IsArray,
   IsBoolean,
   IsEmail,
-  IsIn,
   IsOptional,
   IsString,
   IsUrl,
@@ -31,7 +30,7 @@ export class CreateUserDto {
   phone?: string;
 
   @IsOptional()
-  @IsIn(['user', 'admin', 'superadmin'])
+  @IsString()
   role?: string;
 
   @IsOptional()

@@ -62,6 +62,24 @@ export class WhatsAppController {
     return { status: 'sucesso', data };
   }
 
+  @Post('connect')
+  async connect() {
+    const data = await this.whatsappService.connectActive(false);
+    return { status: 'sucesso', data, mensagem: 'Conexão iniciada (se necessário, escaneie o QR code).' };
+  }
+
+  @Post('disconnect')
+  async disconnect() {
+    const data = await this.whatsappService.disconnectActive(false);
+    return { status: 'sucesso', data, mensagem: 'WhatsApp desconectado.' };
+  }
+
+  @Post('reset-session')
+  async resetSession() {
+    const data = await this.whatsappService.resetActiveSession();
+    return { status: 'sucesso', data, mensagem: 'Sessão resetada. Será necessário parear novamente.' };
+  }
+
   // ─── Messages ───────────────────────────────────────────
 
   @Post('messages/send-text')

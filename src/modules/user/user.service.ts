@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -9,12 +9,23 @@ import { toPublicUser } from './to-public-user';
 @Injectable()
 export class UserService {
   constructor(private readonly prisma: PrismaService) {}
+  private readonly baseRoles = ['user', 'admin', 'superadmin', 'paciente'];
 
   private toSafe(user: User) {
     return toPublicUser(user);
   }
 
   async create(createUserDto: CreateUserDto) {
+    const requestedRole = createUserDto.role?.trim();
+    if (requestedRole) {
+      const allowedRoles = await this.getAvailableRoles();
+      if (!allowedRoles.includes(requestedRole)) {
+        throw new BadRequestException(
+          `Role "${requestedRole}" não existe no sistema. Roles disponíveis: ${allowedRoles.join(', ')}`,
+        );
+      }
+    }
+
     const password = await bcrypt.hash(createUserDto.password, 10);
     const user = await this.prisma.user.create({
       data: {
@@ -23,12 +34,23 @@ export class UserService {
         name: createUserDto.name,
         avatarUrl: createUserDto.avatarUrl,
         phone: createUserDto.phone,
-        role: createUserDto.role ?? 'user',
+        role: requestedRole ?? 'user',
         permissions: (createUserDto.permissions ?? []) as Prisma.InputJsonValue,
         isActive: createUserDto.isActive ?? true,
       },
     });
     return this.toSafe(user);
+  }
+
+  async getAvailableRoles() {
+    const rolesFromDb = await this.prisma.user.findMany({
+      select: { role: true },
+    });
+    const merged = new Set<string>([
+      ...this.baseRoles,
+      ...rolesFromDb.map((r) => r.role).filter(Boolean),
+    ]);
+    return Array.from(merged).sort((a, b) => a.localeCompare(b));
   }
 
   async findAll() {
