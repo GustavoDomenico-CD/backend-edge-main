@@ -110,7 +110,7 @@ export class PostConsultationWhatsAppService {
         partsSent: 0,
         error: 'status_not_completed',
       });
-      return { skipped: 'status_not_completed' };
+      return { sent: false, skipped: 'status_not_completed' };
     }
 
     if (merged.whatsappPrescriptionSentAt && !forceResend) {
@@ -122,7 +122,7 @@ export class PostConsultationWhatsAppService {
         partsSent: 0,
         error: 'already_sent',
       });
-      return { skipped: 'already_sent' };
+      return { sent: false, skipped: 'already_sent' };
     }
 
     const phone = (merged.telephone || '').trim();
@@ -135,7 +135,7 @@ export class PostConsultationWhatsAppService {
         partsSent: 0,
         error: 'missing_phone',
       });
-      return { error: 'missing_phone' };
+      return { sent: false, error: 'missing_phone' };
     }
 
     const intro = this.buildIntro(merged);
