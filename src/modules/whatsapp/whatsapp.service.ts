@@ -210,18 +210,30 @@ export class WhatsAppService {
 
     const logger = pino({ level: 'silent' });
 
+    /**
+     * "Bad MAC" / falha ao descriptografar costuma vir de sessão Signal inconsistente.
+     * O cache de chaves (`makeCacheableSignalKeyStore`) pode dessincronizar do disco em alguns cenários;
+     * por padrão usamos `state.keys` direto (mais estável). Ative `WA_SIGNAL_KEY_CACHE=1` se quiser o cache.
+     */
+    const useSignalKeyCache = process.env.WA_SIGNAL_KEY_CACHE === '1';
+    const signalKeys = useSignalKeyCache
+      ? makeCacheableSignalKeyStore(state.keys, logger)
+      : state.keys;
+
     const sock = makeWASocket({
       version,
       browser: Browsers.macOS('Chrome'),
       auth: {
         creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger),
+        keys: signalKeys,
       },
       logger,
       printQRInTerminal: false,
       markOnlineOnConnect: false,
       generateHighQualityLinkPreview: true,
       syncFullHistory: false,
+      /** Necessário para retries de mensagem no Baileys; evita comportamentos estranhos em alguns fluxos. */
+      getMessage: async () => undefined,
     });
 
     sock.ev.on('creds.update', saveCreds);
