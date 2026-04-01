@@ -48,10 +48,8 @@ model ProactiveRule {
 
 model WhatsAppConfig {
   id           Int      @id @default(autoincrement())
-  instanceName String
-  phoneNumber  String
-  apiKey       String
-  webhookUrl   String   @default("")
+  instanceName String   @default("default")
+  phoneNumber  String   @default("")
   status       String   @default("disconnected")
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())

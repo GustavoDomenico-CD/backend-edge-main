@@ -14,8 +14,6 @@ import { AuthGuard } from '@nestjs/passport';
 import { Roles, RolesGuard } from '../auth/roles.guard';
 import { WhatsAppService } from './whatsapp.service';
 import {
-  CreateWhatsAppConfigDto,
-  UpdateWhatsAppConfigDto,
   SendTextMessageDto,
   SendTemplateMessageDto,
   SendMediaMessageDto,
@@ -30,31 +28,7 @@ import {
 export class WhatsAppController {
   constructor(private readonly whatsappService: WhatsAppService) {}
 
-  // ─── Config ─────────────────────────────────────────────
-
-  @Get('config')
-  async getConfigs() {
-    const data = await this.whatsappService.getAllConfigs();
-    return { status: 'sucesso', data };
-  }
-
-  @Post('config')
-  async createConfig(@Body() dto: CreateWhatsAppConfigDto) {
-    const data = await this.whatsappService.createConfig(dto);
-    return { status: 'sucesso', data, mensagem: 'Configuração criada com sucesso' };
-  }
-
-  @Put('config/:id')
-  async updateConfig(@Param('id') id: string, @Body() dto: UpdateWhatsAppConfigDto) {
-    const data = await this.whatsappService.updateConfig(Number(id), dto);
-    return { status: 'sucesso', data, mensagem: 'Configuração atualizada' };
-  }
-
-  @Delete('config/:id')
-  async deleteConfig(@Param('id') id: string) {
-    await this.whatsappService.deleteConfig(Number(id));
-    return { status: 'sucesso', mensagem: 'Configuração removida' };
-  }
+  // ─── Connection (Baileys QR code only) ─────────────────
 
   @Get('status')
   async getConnectionStatus() {
@@ -190,7 +164,4 @@ export class WhatsAppController {
     const data = await this.whatsappService.getKPIs();
     return { status: 'sucesso', data };
   }
-
-  // ─── Webhook (public - no auth) ────────────────────────
-  // Note: Webhook endpoints are handled separately without auth
 }

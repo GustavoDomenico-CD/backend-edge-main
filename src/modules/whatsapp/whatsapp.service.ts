@@ -14,8 +14,6 @@ import makeWASocket, {
 import pino from 'pino';
 import QRCode from 'qrcode';
 import {
-  CreateWhatsAppConfigDto,
-  UpdateWhatsAppConfigDto,
   SendTextMessageDto,
   SendTemplateMessageDto,
   SendMediaMessageDto,
@@ -34,7 +32,6 @@ export class WhatsAppService {
   private activeInstanceName: string | null = null;
 
   private sessionsBaseDir() {
-    // Persisted on disk: survives restarts.
     return path.resolve(process.cwd(), '.wa_sessions');
   }
 
@@ -55,8 +52,7 @@ export class WhatsAppService {
   }
 
   private async updateActiveConfigStatus(status: string, phoneNumber?: string | null) {
-    const cfg = await this.getConfig();
-    if (!cfg) return;
+    const cfg = await this.getOrCreateConfig();
     await this.prisma.whatsAppConfig.update({
       where: { id: cfg.id },
       data: {
@@ -66,16 +62,33 @@ export class WhatsAppService {
     });
   }
 
+  /**
+   * Returns the active config, auto-creating a default one if none exists.
+   * This removes the need for manual config creation.
+   */
+  async getOrCreateConfig() {
+    const existing = await this.prisma.whatsAppConfig.findFirst({ where: { isActive: true } });
+    if (existing) return existing;
+
+    return this.prisma.whatsAppConfig.create({
+      data: {
+        instanceName: 'default',
+        phoneNumber: '',
+        status: 'disconnected',
+        isActive: true,
+      },
+    });
+  }
+
   async connectActive(forceNewSocket = false) {
-    const cfg = await this.getConfig();
-    if (!cfg) throw new NotFoundException('Nenhuma configuração ativa encontrada');
+    const cfg = await this.getOrCreateConfig();
 
     if (!forceNewSocket && this.sock && this.activeInstanceName === cfg.instanceName) {
       return {
         connected: cfg.status === 'connected',
         status: cfg.status,
-        phoneNumber: cfg.phoneNumber ?? null,
-        instanceName: cfg.instanceName ?? null,
+        phoneNumber: cfg.phoneNumber || null,
+        instanceName: cfg.instanceName,
         qr: this.qrDataUrl,
       };
     }
@@ -84,8 +97,8 @@ export class WhatsAppService {
       return {
         connected: cfg.status === 'connected',
         status: cfg.status,
-        phoneNumber: cfg.phoneNumber ?? null,
-        instanceName: cfg.instanceName ?? null,
+        phoneNumber: cfg.phoneNumber || null,
+        instanceName: cfg.instanceName,
         qr: this.qrDataUrl,
       };
     }
@@ -119,7 +132,6 @@ export class WhatsAppService {
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
       if (qr) {
-        // DataURL is easiest for frontend.
         this.qrDataUrl = await QRCode.toDataURL(qr, { margin: 1, width: 280 });
         await this.updateActiveConfigStatus('qr');
       }
@@ -134,23 +146,18 @@ export class WhatsAppService {
       if (connection === 'close') {
         this.qrDataUrl = null;
         const code = (lastDisconnect?.error as any)?.output?.statusCode as number | undefined;
-        const reason = code ? (DisconnectReason as any)[code] : undefined;
         await this.updateActiveConfigStatus('disconnected');
 
-        // If logged out, we should require a new QR.
         if (code === DisconnectReason.loggedOut) {
           // keep session files; user can call reset-session explicitly
         } else {
-          // Attempt reconnect on transient failures.
           if (this.activeInstanceName === cfg.instanceName) {
-            // best-effort reconnect (do not loop hard)
             setTimeout(() => {
               this.connectActive(true).catch(() => {});
             }, 1500);
           }
         }
 
-        // cleanup socket reference if this is current
         if (this.sock === sock) {
           this.sock = null;
         }
@@ -172,23 +179,22 @@ export class WhatsAppService {
     await this.updateActiveConfigStatus('connecting');
     this.connecting = false;
 
-    // Give Baileys a short window to emit QR/open state, so frontend
-    // can usually render the QR right after clicking "Conectar".
+    // Give Baileys a short window to emit QR/open state
     const startedAt = Date.now();
     const waitMs = 8000;
     while (Date.now() - startedAt < waitMs) {
-      const fresh = await this.getConfig();
-      if (this.qrDataUrl || fresh?.status === 'connected' || fresh?.status === 'qr') break;
+      const fresh = await this.getOrCreateConfig();
+      if (this.qrDataUrl || fresh.status === 'connected' || fresh.status === 'qr') break;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
 
-    const fresh = await this.getConfig();
+    const fresh = await this.getOrCreateConfig();
 
     return {
-      connected: fresh?.status === 'connected',
-      status: fresh?.status ?? 'connecting',
-      phoneNumber: fresh?.phoneNumber ?? cfg.phoneNumber ?? null,
-      instanceName: fresh?.instanceName ?? cfg.instanceName ?? null,
+      connected: fresh.status === 'connected',
+      status: fresh.status,
+      phoneNumber: fresh.phoneNumber || null,
+      instanceName: fresh.instanceName,
       qr: this.qrDataUrl,
     };
   }
@@ -215,8 +221,7 @@ export class WhatsAppService {
   }
 
   async resetActiveSession() {
-    const cfg = await this.getConfig();
-    if (!cfg) throw new NotFoundException('Nenhuma configuração ativa encontrada');
+    const cfg = await this.getOrCreateConfig();
     await this.disconnectActive(true);
     await rm(this.sessionDir(cfg.instanceName), { recursive: true, force: true });
     await this.updateActiveConfigStatus('disconnected');
@@ -224,8 +229,7 @@ export class WhatsAppService {
   }
 
   private async ensureConnectedSocket() {
-    const cfg = await this.getConfig();
-    if (!cfg) throw new NotFoundException('Nenhuma configuração ativa encontrada');
+    const cfg = await this.getOrCreateConfig();
     if (!this.sock) {
       await this.connectActive(true);
     }
@@ -276,48 +280,15 @@ export class WhatsAppService {
     await this.handleInboundMessage(from, messageId, type, content, mediaUrl);
   }
 
-  // ─── Config ─────────────────────────────────────────────
-
-  async getConfig() {
-    return this.prisma.whatsAppConfig.findFirst({ where: { isActive: true } });
-  }
-
-  async getAllConfigs() {
-    return this.prisma.whatsAppConfig.findMany({ orderBy: { createdAt: 'desc' } });
-  }
-
-  async createConfig(dto: CreateWhatsAppConfigDto) {
-    return this.prisma.whatsAppConfig.create({
-      data: {
-        instanceName: dto.instanceName,
-        phoneNumber: dto.phoneNumber,
-        apiKey: dto.apiKey,
-        webhookUrl: dto.webhookUrl ?? '',
-        status: 'disconnected',
-        isActive: true,
-      },
-    });
-  }
-
-  async updateConfig(id: number, dto: UpdateWhatsAppConfigDto) {
-    const config = await this.prisma.whatsAppConfig.findUnique({ where: { id } });
-    if (!config) throw new NotFoundException('Configuração não encontrada');
-    return this.prisma.whatsAppConfig.update({ where: { id }, data: dto });
-  }
-
-  async deleteConfig(id: number) {
-    const config = await this.prisma.whatsAppConfig.findUnique({ where: { id } });
-    if (!config) throw new NotFoundException('Configuração não encontrada');
-    return this.prisma.whatsAppConfig.delete({ where: { id } });
-  }
+  // ─── Status ─────────────────────────────────────────────
 
   async getConnectionStatus() {
-    const config = await this.getConfig();
+    const config = await this.getOrCreateConfig();
     return {
-      connected: config?.status === 'connected',
-      status: config?.status ?? 'disconnected',
-      phoneNumber: config?.phoneNumber ?? null,
-      instanceName: config?.instanceName ?? null,
+      connected: config.status === 'connected',
+      status: config.status,
+      phoneNumber: config.phoneNumber || null,
+      instanceName: config.instanceName,
       qr: this.qrDataUrl,
     };
   }
@@ -418,7 +389,6 @@ export class WhatsAppService {
     });
 
     try {
-      // Baileys expects a direct URL or buffer. We'll treat mediaUrl as a URL.
       const anyMsg: any = {};
       if (dto.type === 'image') anyMsg.image = { url: dto.mediaUrl };
       if (dto.type === 'video') anyMsg.video = { url: dto.mediaUrl };
@@ -593,7 +563,7 @@ export class WhatsAppService {
     return this.prisma.whatsAppTemplate.delete({ where: { id } });
   }
 
-  // ─── Webhook ────────────────────────────────────────────
+  // ─── Inbound handling ──────────────────────────────────
 
   async handleInboundMessage(from: string, messageId: string, type: string, content: string, mediaUrl?: string) {
     const contact = await this.findOrCreateContact(from);
