@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query } from '@nestjs/common'
 import { AdminChatbotService } from './admin-chatbot.service'
 import { ProactiveAgentService } from './proactive-agent.service'
+import { PostConsultationWhatsAppService } from './post-consultation-whatsapp.service'
 import { CreateProactiveRuleDto, UpdateProactiveRuleDto } from './dto/proactive-rule.dto'
 
 interface AdminAppointment {
@@ -19,6 +20,10 @@ interface AdminAppointment {
   hour: number
   duration: number
   observations?: string
+  /** Texto do prontuário / receitas enviado ao paciente (armazenado no agendamento em memória). */
+  prescriptionText?: string
+  /** ISO: último envio automático de receita por WhatsApp. */
+  whatsappPrescriptionSentAt?: string
 }
 
 interface CreateAppointmentDto {
@@ -36,6 +41,21 @@ interface CreateAppointmentDto {
   hour?: number
   duration?: number
   observations?: string
+  prescriptionText?: string
+  prescription_text?: string
+  sendPrescriptionWhatsApp?: boolean
+  forceResendWhatsApp?: boolean
+}
+
+function sanitizeAppointmentPatch(body: Record<string, unknown>): Partial<AdminAppointment> {
+  const o = { ...body } as Record<string, unknown>
+  delete o.sendPrescriptionWhatsApp
+  delete o.forceResendWhatsApp
+  if (typeof o.prescription_text === 'string' && o.prescriptionText == null) {
+    o.prescriptionText = o.prescription_text
+  }
+  delete o.prescription_text
+  return o as Partial<AdminAppointment>
 }
 
 @Controller('admin/agendamento')
@@ -45,6 +65,7 @@ export class AdminAgendamentoController {
   constructor(
     private readonly chatbotService: AdminChatbotService,
     private readonly proactiveService: ProactiveAgentService,
+    private readonly postConsultationWhatsApp: PostConsultationWhatsAppService,
   ) {}
 
   /**
@@ -189,9 +210,11 @@ export class AdminAgendamentoController {
    * Cria agendamento para testes e dashboard.
    */
   @Post('criar')
-  create(@Body() body: CreateAppointmentDto) {
+  async create(@Body() body: CreateAppointmentDto) {
     const date = body.date ?? new Date().toISOString().slice(0, 10)
     const parsedDate = new Date(`${date}T00:00:00`)
+    const rx =
+      (body.prescriptionText ?? body.prescription_text)?.trim() || undefined
     const appointment: AdminAppointment = {
       id: `ag-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
       date,
@@ -208,15 +231,38 @@ export class AdminAgendamentoController {
       hour: Number.isFinite(body.hour) ? Number(body.hour) : 9,
       duration: Number.isFinite(body.duration) ? Number(body.duration) : 60,
       observations: body.observations?.trim() || undefined,
+      prescriptionText: rx,
     }
 
     this.appointments.unshift(appointment)
+
+    const emptyPrev: AdminAppointment = {
+      ...appointment,
+      prescriptionText: '',
+      whatsappPrescriptionSentAt: undefined,
+      status: '',
+    }
+    let whatsappFollowUp: { sent: boolean; parts?: number; skipped?: string; error?: string } | null =
+      null
+    try {
+      whatsappFollowUp = await this.postConsultationWhatsApp.trySendAfterUpdate(
+        emptyPrev,
+        appointment,
+        body as Record<string, unknown>,
+      )
+    } catch {
+      whatsappFollowUp = null
+    }
+    if (whatsappFollowUp?.sent) {
+      appointment.whatsappPrescriptionSentAt = new Date().toISOString()
+    }
 
     return {
       status: 'sucesso',
       success: true,
       data: appointment,
       mensagem: 'Agendamento criado com sucesso',
+      whatsappFollowUp,
     }
   }
 
@@ -225,11 +271,30 @@ export class AdminAgendamentoController {
    * Front chama: PUT /admin/agendamento/:id/atualizar com JSON body.
    */
   @Put(':id/atualizar')
-  update(@Param('id') id: string, @Body() body: Partial<AdminAppointment>) {
+  async update(@Param('id') id: string, @Body() body: Record<string, unknown>) {
     const idx = this.appointments.findIndex((a) => a.id === id)
     if (idx === -1) return { status: 'erro', id, message: 'Agendamento não encontrado' }
-    this.appointments[idx] = { ...this.appointments[idx], ...body, id }
-    return { status: 'sucesso', id, message: 'OK' }
+    const prev = { ...this.appointments[idx] }
+    const patch = sanitizeAppointmentPatch(body)
+    this.appointments[idx] = { ...this.appointments[idx], ...patch, id }
+    const merged = this.appointments[idx]
+
+    let whatsappFollowUp: { sent: boolean; parts?: number; skipped?: string; error?: string } | null =
+      null
+    try {
+      whatsappFollowUp = await this.postConsultationWhatsApp.trySendAfterUpdate(
+        prev,
+        merged,
+        body,
+      )
+    } catch {
+      whatsappFollowUp = null
+    }
+    if (whatsappFollowUp?.sent) {
+      this.appointments[idx].whatsappPrescriptionSentAt = new Date().toISOString()
+    }
+
+    return { status: 'sucesso', id, message: 'OK', whatsappFollowUp }
   }
 
   /**

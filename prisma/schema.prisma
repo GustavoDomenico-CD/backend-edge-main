@@ -102,3 +102,15 @@ model WhatsAppTemplate {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+/// Log de envios automáticos pós-consulta (receita/prontuário via WhatsApp).
+model ConsultationWhatsAppLog {
+  id            Int      @id @default(autoincrement())
+  appointmentId String
+  patientPhone  String
+  patientName   String?
+  status        String
+  partsSent     Int      @default(0)
+  error         String?
+  createdAt     DateTime @default(now())
+}
