@@ -151,6 +151,12 @@ export class WhatsAppController {
     return { status: 'sucesso', data };
   }
 
+  @Patch('contacts/:id/toggle-agent')
+  async toggleAgent(@Param('id') id: string) {
+    const data = await this.whatsappService.toggleAgentContact(Number(id));
+    return { status: 'sucesso', data };
+  }
+
   // ─── Templates ──────────────────────────────────────────
 
   @Get('templates')
