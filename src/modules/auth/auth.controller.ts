@@ -30,4 +30,9 @@ export class AuthController {
   profile(@Req() req: Request & { user: JwtReqUser }) {
     return req.user;
   }
+
+  @Post('logout')
+  logout() {
+    return { status: 'ok', message: 'Logged out' };
+  }
 }
