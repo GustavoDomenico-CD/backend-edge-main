@@ -74,6 +74,7 @@ export class WhatsAppService {
       data: {
         instanceName: 'default',
         phoneNumber: '',
+        apiKey: '',
         status: 'disconnected',
         isActive: true,
       },

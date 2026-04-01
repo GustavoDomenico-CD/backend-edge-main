@@ -50,6 +50,9 @@ model WhatsAppConfig {
   id           Int      @id @default(autoincrement())
   instanceName String   @default("default")
   phoneNumber  String   @default("")
+  /// Legado (Cloud API). Com Baileys + QR fica vazio.
+  apiKey       String   @default("")
+  webhookUrl   String   @default("")
   status       String   @default("disconnected")
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
