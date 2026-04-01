@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import * as path from 'path';
 import { mkdir, rm } from 'fs/promises';
@@ -83,12 +88,53 @@ export class WhatsAppService {
     await mkdir(this.sessionDir(instanceName), { recursive: true });
   }
 
+  /**
+   * Dígitos E.164 sem + (ex.: Brasil 5511999999999).
+   * Se vier 10/11 dígitos sem DDI, assume Brasil e prefixa 55.
+   */
+  private normalizePhoneDigits(input: string): string {
+    const d = (input || '').replace(/\D/g, '');
+    if (!d) return '';
+    if (d.length >= 12) return d;
+    if (d.length === 10 || d.length === 11) return `55${d}`;
+    return d;
+  }
+
   private normalizeToJid(to: string) {
     const trimmed = (to || '').trim();
     if (!trimmed) return '';
     if (trimmed.includes('@s.whatsapp.net') || trimmed.includes('@g.us')) return trimmed;
-    const digits = trimmed.replace(/[^\d]/g, '');
+    const digits = this.normalizePhoneDigits(trimmed);
+    if (!digits) return '';
     return `${digits}@s.whatsapp.net`;
+  }
+
+  private async resolveMediaBuffer(dto: SendMediaMessageDto): Promise<{ buffer: Buffer; mimeType?: string }> {
+    const b64 = dto.mediaBase64?.trim();
+    if (b64) {
+      const raw = b64.includes('base64,') ? b64.split('base64,')[1] ?? '' : b64;
+      if (!raw) throw new BadRequestException('Base64 inválido');
+      return { buffer: Buffer.from(raw, 'base64'), mimeType: dto.mimeType };
+    }
+    const url = dto.mediaUrl?.trim();
+    if (!url) {
+      throw new BadRequestException('Informe mediaUrl ou mediaBase64');
+    }
+    if (url.startsWith('data:')) {
+      const raw = url.split('base64,')[1];
+      if (!raw) throw new BadRequestException('Data URL inválida');
+      return { buffer: Buffer.from(raw, 'base64'), mimeType: dto.mimeType };
+    }
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      const res = await fetch(url, { redirect: 'follow' });
+      if (!res.ok) {
+        throw new ServiceUnavailableException(`Não foi possível baixar a mídia (HTTP ${res.status})`);
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      const ct = res.headers.get('content-type') ?? undefined;
+      return { buffer: buf, mimeType: dto.mimeType ?? ct ?? undefined };
+    }
+    throw new BadRequestException('mediaUrl deve ser HTTP(S) ou data:');
   }
 
   private async updateActiveConfigStatus(status: string, phoneNumber?: string | null) {
@@ -352,7 +398,9 @@ export class WhatsAppService {
     const toJid = this.normalizeToJid(dto.to);
     if (!toJid) throw new NotFoundException('Destino inválido');
 
-    const contact = await this.findOrCreateContact(dto.to);
+    const phone = this.normalizePhoneDigits(dto.to);
+    if (!phone) throw new BadRequestException('Número de destino inválido');
+    const contact = await this.findOrCreateContact(phone);
     const message = await this.prisma.whatsAppMessage.create({
       data: {
         contactId: contact.id,
@@ -387,7 +435,9 @@ export class WhatsAppService {
     const toJid = this.normalizeToJid(dto.to);
     if (!toJid) throw new NotFoundException('Destino inválido');
 
-    const contact = await this.findOrCreateContact(dto.to);
+    const phone = this.normalizePhoneDigits(dto.to);
+    if (!phone) throw new BadRequestException('Número de destino inválido');
+    const contact = await this.findOrCreateContact(phone);
     const content = dto.variables?.length
       ? `[Template: ${dto.templateName}] vars: ${dto.variables.join(', ')}`
       : `[Template: ${dto.templateName}]`;
@@ -427,28 +477,58 @@ export class WhatsAppService {
     const toJid = this.normalizeToJid(dto.to);
     if (!toJid) throw new NotFoundException('Destino inválido');
 
-    const contact = await this.findOrCreateContact(dto.to);
+    const { buffer, mimeType } = await this.resolveMediaBuffer(dto);
+    if (buffer.length > 16 * 1024 * 1024) {
+      throw new BadRequestException('Arquivo muito grande (máx. 16 MB)');
+    }
+
+    const phone = this.normalizePhoneDigits(dto.to);
+    if (!phone) throw new BadRequestException('Número de destino inválido');
+    const contact = await this.findOrCreateContact(phone);
+    const mediaRef =
+      dto.mediaUrl?.slice(0, 500) ?? (dto.mediaBase64 ? '[base64]' : undefined);
+
     const message = await this.prisma.whatsAppMessage.create({
       data: {
         contactId: contact.id,
         direction: 'outbound',
         type: dto.type,
         content: dto.caption ?? '',
-        mediaUrl: dto.mediaUrl,
+        mediaUrl: mediaRef,
         status: 'pending',
         sentAt: new Date(),
       },
     });
 
     try {
-      const anyMsg: any = {};
-      if (dto.type === 'image') anyMsg.image = { url: dto.mediaUrl };
-      if (dto.type === 'video') anyMsg.video = { url: dto.mediaUrl };
-      if (dto.type === 'audio') anyMsg.audio = { url: dto.mediaUrl };
-      if (dto.type === 'document') anyMsg.document = { url: dto.mediaUrl, fileName: dto.filename ?? 'arquivo' };
-      if (dto.caption) anyMsg.caption = dto.caption;
+      const res = await (async () => {
+        if (dto.type === 'image') {
+          return sock.sendMessage(toJid, {
+            image: buffer,
+            caption: dto.caption,
+          });
+        }
+        if (dto.type === 'video') {
+          return sock.sendMessage(toJid, {
+            video: buffer,
+            caption: dto.caption,
+          });
+        }
+        if (dto.type === 'audio') {
+          return sock.sendMessage(toJid, {
+            audio: buffer,
+            ptt: false,
+            mimetype: mimeType ?? 'audio/mpeg',
+          });
+        }
+        return sock.sendMessage(toJid, {
+          document: buffer,
+          mimetype: mimeType ?? 'application/octet-stream',
+          fileName: dto.filename ?? 'arquivo',
+          caption: dto.caption,
+        });
+      })();
 
-      const res = await sock.sendMessage(toJid, anyMsg);
       await this.prisma.whatsAppMessage.update({
         where: { id: message.id },
         data: { status: 'sent', externalId: res?.key?.id ?? null },
@@ -524,8 +604,10 @@ export class WhatsAppService {
   }
 
   async upsertContact(dto: UpsertContactDto) {
+    const phone = this.normalizePhoneDigits(dto.phoneNumber);
+    if (!phone) throw new BadRequestException('Número inválido');
     const existing = await this.prisma.whatsAppContact.findUnique({
-      where: { phoneNumber: dto.phoneNumber },
+      where: { phoneNumber: phone },
     });
     if (existing) {
       return this.prisma.whatsAppContact.update({
@@ -538,7 +620,7 @@ export class WhatsAppService {
     }
     return this.prisma.whatsAppContact.create({
       data: {
-        phoneNumber: dto.phoneNumber,
+        phoneNumber: phone,
         name: dto.name,
         tags: JSON.stringify(dto.tags ?? []),
         isBlocked: false,

@@ -31,8 +31,19 @@ export class SendMediaMessageDto {
   @IsIn(['image', 'document', 'audio', 'video'])
   type: 'image' | 'document' | 'audio' | 'video';
 
+  /** URL pública HTTP(S) ou data:image/...;base64,... */
   @IsString()
-  mediaUrl: string;
+  @IsOptional()
+  mediaUrl?: string;
+
+  /** Base64 cru (sem prefixo data:) ou data URL completa — uso típico: foto enviada pelo app */
+  @IsString()
+  @IsOptional()
+  mediaBase64?: string;
+
+  @IsString()
+  @IsOptional()
+  mimeType?: string;
 
   @IsString()
   @IsOptional()
