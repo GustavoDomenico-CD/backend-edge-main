@@ -3,6 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import * as path from 'path';
 import { mkdir, rm } from 'fs/promises';
 import makeWASocket, {
+  Browsers,
   DisconnectReason,
   fetchLatestBaileysVersion,
   isJidBroadcast,
@@ -28,8 +29,47 @@ export class WhatsAppService {
 
   private sock: WASocket | null = null;
   private qrDataUrl: string | null = null;
+  /** String exata do evento Baileys — é o que deve ser codificado no QR (docs: enviar ao front). */
+  private qrRaw: string | null = null;
   private connecting = false;
   private activeInstanceName: string | null = null;
+
+  private normalizeQrPayload(qr: unknown): string | null {
+    if (qr == null) return null;
+    if (typeof qr === 'string') return qr;
+    if (Buffer.isBuffer(qr)) return qr.toString('utf8');
+    return String(qr);
+  }
+
+  /** Gera PNG (data URL) a partir do payload oficial do WhatsApp Web; evita QR “válido” mas ilegível. */
+  private async encodeQrToDataUrl(raw: string): Promise<string | null> {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    try {
+      return await QRCode.toDataURL(trimmed, {
+        type: 'image/png',
+        errorCorrectionLevel: 'L',
+        margin: 2,
+        width: 512,
+        color: { dark: '#000000', light: '#ffffff' },
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  private async applyQrUpdate(qr: unknown) {
+    const raw = this.normalizeQrPayload(qr);
+    if (!raw?.trim()) return;
+    this.qrRaw = raw;
+    this.qrDataUrl = await this.encodeQrToDataUrl(raw);
+    await this.updateActiveConfigStatus('qr');
+  }
+
+  private clearQr() {
+    this.qrDataUrl = null;
+    this.qrRaw = null;
+  }
 
   private sessionsBaseDir() {
     return path.resolve(process.cwd(), '.wa_sessions');
@@ -91,6 +131,7 @@ export class WhatsAppService {
         phoneNumber: cfg.phoneNumber || null,
         instanceName: cfg.instanceName,
         qr: this.qrDataUrl,
+        qrRaw: this.qrRaw,
       };
     }
 
@@ -101,22 +142,31 @@ export class WhatsAppService {
         phoneNumber: cfg.phoneNumber || null,
         instanceName: cfg.instanceName,
         qr: this.qrDataUrl,
+        qrRaw: this.qrRaw,
       };
     }
 
     this.connecting = true;
     this.activeInstanceName = cfg.instanceName;
-    this.qrDataUrl = null;
+    this.clearQr();
 
     await this.ensureSessionDir(cfg.instanceName);
 
     const { state, saveCreds } = await useMultiFileAuthState(this.sessionDir(cfg.instanceName));
-    const { version } = await fetchLatestBaileysVersion();
+
+    let version: [number, number, number];
+    try {
+      const fetched = await fetchLatestBaileysVersion();
+      version = [...fetched.version] as [number, number, number];
+    } catch {
+      version = [2, 3000, 1035194821];
+    }
 
     const logger = pino({ level: 'silent' });
 
     const sock = makeWASocket({
       version,
+      browser: Browsers.macOS('Chrome'),
       auth: {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, logger),
@@ -133,19 +183,18 @@ export class WhatsAppService {
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
       if (qr) {
-        this.qrDataUrl = await QRCode.toDataURL(qr, { margin: 1, width: 280 });
-        await this.updateActiveConfigStatus('qr');
+        await this.applyQrUpdate(qr);
       }
 
       if (connection === 'open') {
         const me = sock.user?.id ?? null;
         const phone = me ? String(me).split(':')[0].replace(/[^\d]/g, '') : null;
-        this.qrDataUrl = null;
+        this.clearQr();
         await this.updateActiveConfigStatus('connected', phone);
       }
 
       if (connection === 'close') {
-        this.qrDataUrl = null;
+        this.clearQr();
         const code = (lastDisconnect?.error as any)?.output?.statusCode as number | undefined;
         await this.updateActiveConfigStatus('disconnected');
 
@@ -197,11 +246,12 @@ export class WhatsAppService {
       phoneNumber: fresh.phoneNumber || null,
       instanceName: fresh.instanceName,
       qr: this.qrDataUrl,
+      qrRaw: this.qrRaw,
     };
   }
 
   async disconnectActive(logout = false) {
-    this.qrDataUrl = null;
+    this.clearQr();
     const sock = this.sock;
     this.sock = null;
     this.connecting = false;
@@ -291,6 +341,7 @@ export class WhatsAppService {
       phoneNumber: config.phoneNumber || null,
       instanceName: config.instanceName,
       qr: this.qrDataUrl,
+      qrRaw: this.qrRaw,
     };
   }
 
