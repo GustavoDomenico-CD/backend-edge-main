@@ -22,6 +22,27 @@ model User {
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
   proactiveRules ProactiveRule[]
+  chatbotCadastro ChatbotCadastro?
+}
+
+/// Cadastro de paciente feito pelo fluxo do chatbot (auditoria + vínculo com User).
+model ChatbotCadastro {
+  id                   Int      @id @default(autoincrement())
+  email                String
+  name                 String?
+  phone                String?
+  consultationType     String?
+  consultationCategory String?
+  role                 String   @default("paciente")
+  userId               Int?     @unique
+  user                 User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  status               String   @default("pending")
+  errorMessage         String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([email])
+  @@index([createdAt])
 }
 
 /// Regra de comportamento proativo do agente.
