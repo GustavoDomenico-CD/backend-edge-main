@@ -1,42 +1,5 @@
 import { IsString, IsOptional, IsBoolean, IsArray, IsIn, IsNumber } from 'class-validator';
 
-export class CreateWhatsAppConfigDto {
-  @IsString()
-  instanceName: string;
-
-  @IsString()
-  phoneNumber: string;
-
-  @IsString()
-  apiKey: string;
-
-  @IsString()
-  @IsOptional()
-  webhookUrl?: string;
-}
-
-export class UpdateWhatsAppConfigDto {
-  @IsString()
-  @IsOptional()
-  instanceName?: string;
-
-  @IsString()
-  @IsOptional()
-  phoneNumber?: string;
-
-  @IsString()
-  @IsOptional()
-  apiKey?: string;
-
-  @IsString()
-  @IsOptional()
-  webhookUrl?: string;
-
-  @IsBoolean()
-  @IsOptional()
-  isActive?: boolean;
-}
-
 export class SendTextMessageDto {
   @IsString()
   to: string;
