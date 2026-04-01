@@ -539,6 +539,22 @@ export class WhatsAppService {
     });
   }
 
+  async toggleAgentContact(id: number) {
+    const contact = await this.prisma.whatsAppContact.findUnique({ where: { id } });
+    if (!contact) throw new NotFoundException('Contato não encontrado');
+    return this.prisma.whatsAppContact.update({
+      where: { id },
+      data: { agentEnabled: !contact.agentEnabled },
+    });
+  }
+
+  async isAgentEnabledForPhone(phoneNumber: string): Promise<boolean> {
+    const contact = await this.prisma.whatsAppContact.findUnique({
+      where: { phoneNumber },
+    });
+    return contact?.agentEnabled ?? true;
+  }
+
   // ─── Templates ──────────────────────────────────────────
 
   async listTemplates() {
@@ -585,7 +601,7 @@ export class WhatsAppService {
       where: { id: contact.id },
       data: { lastMessageAt: new Date() },
     });
-    return this.prisma.whatsAppMessage.create({
+    const message = await this.prisma.whatsAppMessage.create({
       data: {
         contactId: contact.id,
         direction: 'inbound',
@@ -598,6 +614,7 @@ export class WhatsAppService {
         deliveredAt: new Date(),
       },
     });
+    return { ...message, agentEnabled: contact.agentEnabled };
   }
 
   async handleStatusUpdate(externalId: string, status: string) {

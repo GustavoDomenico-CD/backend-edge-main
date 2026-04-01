@@ -64,6 +64,8 @@ model WhatsAppContact {
   name          String
   profilePicUrl String?
   isBlocked     Boolean            @default(false)
+  /// Se o agente AI deve responder automaticamente a este contato
+  agentEnabled  Boolean            @default(true)
   lastMessageAt DateTime?
   tags          String             @default("[]")
   createdAt     DateTime           @default(now())
