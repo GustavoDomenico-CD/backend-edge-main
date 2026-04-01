@@ -41,6 +41,9 @@ export class AuthService {
     if (dto.phone !== undefined) {
       data.phone = dto.phone;
     }
+    if (dto.role !== undefined && dto.role.length > 0) {
+      data.role = dto.role;
+    }
     const user = await this.prisma.user.create({ data });
     return {
       ...this.tokenForUser(user.id),

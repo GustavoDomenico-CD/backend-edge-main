@@ -1,5 +1,6 @@
 import {
   IsEmail,
+  IsIn,
   IsOptional,
   IsString,
   IsUrl,
@@ -25,4 +26,9 @@ export class RegisterDto {
   @IsOptional()
   @IsString()
   phone?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['user', 'paciente', 'admin', 'superadmin'])
+  role?: string;
 }
