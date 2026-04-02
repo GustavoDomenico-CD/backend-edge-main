@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuthService } from '../auth/auth.service';
+import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { ChatbotCadastroDto } from './dto/chatbot-cadastro.dto';
 
 @Injectable()
@@ -14,6 +15,7 @@ export class ChatbotCadastroService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly authService: AuthService,
+    private readonly whatsapp: WhatsAppService,
   ) {}
 
   async registerViaChatbot(dto: ChatbotCadastroDto) {
@@ -63,6 +65,8 @@ export class ChatbotCadastroService {
         this.logger.error(`ChatbotCadastro create após User: ${err}`);
       }
 
+      await this.syncWhatsAppContactFromCadastro(dto);
+
       return { success: true, user: reg.user };
     } catch (e) {
       if (e instanceof ConflictException) {
@@ -72,6 +76,26 @@ export class ChatbotCadastroService {
       const msg = e instanceof Error ? e.message : 'Erro ao cadastrar';
       await failRow(msg);
       throw e;
+    }
+  }
+
+  /**
+   * Mesmo efeito de POST /admin/whatsapp/contacts: cria ou atualiza contato com telefone e nome.
+   * Telefone só dígitos + prefixo 55 quando aplicável (via WhatsAppService.upsertContact).
+   * Falha aqui não interrompe o cadastro (apenas warning no log).
+   */
+  private async syncWhatsAppContactFromCadastro(dto: ChatbotCadastroDto) {
+    const raw = dto.phone?.trim();
+    if (!raw || !/\d/.test(raw)) return;
+    const name = dto.name?.trim() || 'Paciente';
+    try {
+      await this.whatsapp.upsertContact({
+        phoneNumber: raw,
+        name,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Sincronização WhatsApp após cadastro chatbot não realizada: ${msg}`);
     }
   }
 
